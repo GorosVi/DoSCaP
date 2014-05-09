@@ -29,6 +29,7 @@ ENDM
 START:	mov AX,	CS
 	mov DS,	AX
 	mov ES,	AX
+
 FileCreate:
 	mov AH,	3Ch
 	lea DX,	fname
@@ -102,6 +103,7 @@ WriteToFile:
 	jc  EmergExit
 	cmp AX,CX
 	jne EmergExit
+
 FileClose:
 	mov AH,	3Eh
 	mov BX,	fhdl
@@ -115,16 +117,19 @@ FileClose:
 	PRINT generr
 	jmp EmergExit
 FileClosed:
+
 	; Return to DOS
 	mov AX,	4C00h
 	int 21h
+	
 EmergExit:
 	PRINT emex
 	mov AX,	4C01h
 	int 21h
+
 msg	DB 'Message! $'
 emex	DB 'Process terminated. $'
 generr	DB 'Generic Error! $'
-;tmp	 DB 513	dup (0DBh)
+
 CODE ENDS
 END START
