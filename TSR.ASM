@@ -12,7 +12,7 @@ fname	DB 'screen.dmp', 00h
 ;fbuffer DB 80*25 dup (0DBh)
 
 msg	DB 'Message!                          ',0
-generr	DB 'Generic Error!                    ',0
+generr	DB 'G  ',0,'eneric Error!             ',0
 
 PRINT MACRO adr
 	pushf
@@ -23,67 +23,46 @@ PRINT MACRO adr
 	popf
 ENDM
 
+sig	DW 0F3F2h ; Signature
+KbdHook:;Int 9h	- key press
+	push AX	DS
 
-PipelineWhenNotCtrl PROC ; use near call!
-	mov AH,	02h
+	;mov AH, 02h
 	; Get Keyboard Flags - BIOS int	16h @ 02h
 	; NONE
 	; OUT -----------------------------------
 	; AL : keyboard	flags state
-	int 16h
-	mov AH,AL
-	test AL, 04h ; 1 when CTRL was held
-	;jz CancelExecution
-	test AH, 0Ch ; 0 when ALT & Shift's was released
-	;jnz CancelExecution
+	;int 16h
+
+	xor AX,	AX
+	mov DS,	AX
+	; Read keyboard	status byte from memory
+	test byte ptr DS:[0417h], 04h ;	1 when CTRL was	held
+	jz  PipelineToOldHandle
+	test byte ptr DS:[0417h], 0Bh ;	0 when ALT & Shift's was released
+	jnz PipelineToOldHandle
 	; Continue when	only CTRL is pressed
-	ret
-CancelExecution:
-	inc SP ; return	address	clear
-	inc SP
-	jmp PipelineToOldHandle
-ENDP
 
-sig	DW 0F3F2h ; Signature
-KbdHook:;Int 9h	- key press
-	print generr
-	jmp PipelineToOldHandle
-	push AX	DS
 	in  AL,	60h
-
 	cmp AL,	1Fh ; 'S'
 	je  SavePicHook
 	cmp AL,	2Dh ; 'X'
 	je  ExitResidentHook
-	pop DS AX
 	jmp PipelineToOldHandle
 
 SavePicHook:
-	;call PipelineWhenNotCtrl
-
-
-	jmp BreakExecution
+	print MSG
+	jmp PipelineToOldHandle
 
 ExitResidentHook:
-	;call PipelineWhenNotCtrl
-
-
-	;jmp BreakExecution
-
-BreakExecution:
-	pop DS AX
-	;print MSG
-	iret
-
-
+	print GENERR
+	;jmp PipelineToOldHandle
 
 PipelineToOldHandle:
+	pop DS AX
 int9h:	DB 0EAh	  ; Jmp	far opcode
 i9old	DW 0DBDBh ; BX
 	DW 0DBDBh ; ES
-
-	cli
-	hlt
 
 PrintOuts PROC
 	; SI - address of ASCII	string
@@ -120,46 +99,62 @@ DOSPRINT MACRO adr
 	push CODE
 	pop DS
 	lea DX,	adr
-	mov AX,	0900h
+	mov AH,	09h
 	int 21h
 	pop DS DX
 ENDM
 
 START:	mov AX,	CS
 	mov DS,	AX
-	;mov ES, AX
 
 	cli
-	;push ES
-	mov AH,	35h
-	mov AL,	09h
+	;mov AH, 35h
+	;mov AL, 09h
 	; Get  IV address - DOS	35h
 	; AL : IV number
 	; OUT ---------------------
 	; ES:BX	: IV address
-	int 21h
+	;int 21h
+
+	xor AX,AX
+	mov ES,AX
+	; Direct read IV from table
+	mov BX,ES:[9*2*2]
+	mov ES,ES:[9*2*2+2]
+
 	; Exit when already loaded
 	mov AX,	ES:[BX-2]
-	;cmp AX, CS:sig
-	jmp ContinLoad
-	;pop ES
+	cmp AX,	CS:[sig]
+
+	jne ContinLoad
+	sti
 	jmp EmergExit
+
  ContinLoad:
 	mov i9old,   BX
 	mov i9old+2, ES
-	;pop ES
 
-	lea DX,	KbdHook
-	mov AH,	25h
-	mov AL,	09h
+	;lea DX, KbdHook
+	;mov AH, 25h
+	;mov AL, 09h
 	; Set  IV address - DOS	25h
 	; AL : IV number
 	; DS:DX	: Interrupt handler
 	; OUT ---------------------
 	; NONE
-	int 21h
+	;int 21h
+
+	xor AX,	AX
+	mov ES,	AX
+	; Direct write IV to table
+	lea AX,	KbdHook
+	mov ES:[9*2*2],	AX
+	mov AX,	CODE
+	mov ES:[9*2*2+2], AX
+
 	sti
 
+	DOSPRINT wasinst
 
 	lea BX,	START
 	; Terminate and	stay resident -	DOS int	27h
@@ -169,11 +164,15 @@ START:	mov AX,	CS
 	int 27h
 
 EmergExit:
+	nop
+	nop
+	nop
 	DOSPRINT emex
 	mov AX,	4C01h
 	int 21h
 emex	DB 'Fatal error, process terminated. $',0
-
+wasinst	DB 'Installed in memory. $',0
+notinst	DB 'Error, not installed in memory. $',0
 EndCode:
 CODE ENDS
 END START
