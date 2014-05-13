@@ -9,10 +9,18 @@ fhdl	DW 0DBDBh ; File handle
 
 fname	DB 'screen.dmp', 00h
 
-;fbuffer DB 80*25 dup (0DBh)
+asyncst	DB 000h
+fbuffer	DB 80*25 dup (0DBh)
 
-msg	DB 'Message!                          ',0
-generr	DB 'G  ',0,'eneric Error!             ',0
+msg 	DB 'Message!                                    ',0
+generr	DB 'G  ',0,'eneric Error!                       ',0
+
+unkmode	DB 'Unknown video mode, cannot take screenshot! ',0
+imgsved	DB 'Screenshot succesfully taken.               ',0
+bufbusy	DB 'Cannot take screenshot, buffer not empty!   ',0
+removed	DB 'TSR succefully unloaded from memory.        ',0
+blremov	DB 'Attempt to unload TSR failed!               ',0
+unremov	DB 'Error in memory unallocation!               ',0
 
 PRINT MACRO adr
 	pushf
@@ -26,13 +34,6 @@ ENDM
 sig	DW 0F3F2h ; Signature
 KbdHook:;Int 9h	- key press
 	push AX	DS
-
-	;mov AH, 02h
-	; Get Keyboard Flags - BIOS int	16h @ 02h
-	; NONE
-	; OUT -----------------------------------
-	; AL : keyboard	flags state
-	;int 16h
 
 	xor AX,	AX
 	mov DS,	AX
@@ -50,19 +51,131 @@ KbdHook:;Int 9h	- key press
 	je  ExitResidentHook
 	jmp PipelineToOldHandle
 
-SavePicHook:
-	print MSG
-	jmp PipelineToOldHandle
-
-ExitResidentHook:
-	print GENERR
-	;jmp PipelineToOldHandle
-
 PipelineToOldHandle:
 	pop DS AX
 int9h:	DB 0EAh	  ; Jmp	far opcode
 i9old	DW 0DBDBh ; BX
 	DW 0DBDBh ; ES
+
+SavePicHook:
+	print MSG
+	jmp PipelineToOldHandle
+
+
+ExitResidentHook:
+	push ES
+
+	push CODE
+	pop DS
+	xor AX,AX
+	mov ES,AX
+
+	cmp word ptr ES:[9*2*2], offset	KbdHook
+	jne IVBlocked
+	cmp word ptr ES:[9*2*2+2], CODE
+	je  CanUnassignIV
+IVBlocked:
+	pop ES
+	PRINT blremov
+	jmp PipelineToOldHandle
+
+CanUnassignIV:
+	cli
+	;RestoreIVs
+	mov AX,	i9old
+	mov word ptr ES:[9*2*2], AX
+	mov AX,	i9old+2
+	mov word ptr ES:[9*2*2+2], AX
+
+	;RemoveEnvSeg
+	;mov ES, CS:[2Ch] ; environment	seg
+	;mov AH,49h
+	; [RE-ENTERABLE]
+	; Release memory block - DOS 49h
+	; ES : segment of releasing block
+	; OUT ---------------------------
+	; AX : Error code when CF == 1
+	;int 21h
+	clc
+	pushf
+
+	; RemoveCodeSeg:
+	push CS
+	pop ES
+	mov AH,49h
+	; Release memory block - DOS 49h
+	int 21h
+	sti
+	pop ES
+	jc RemoveFails
+	popf
+	jc RemoveFails
+
+	PRINT removed
+	jmp PipelineToOldHandle
+
+RemoveFails:
+	PRINT unremov
+	jmp PipelineToOldHandle
+
+
+StoreScreenToMem PROC
+	; At this time only 03h	video mode allowed
+	push AX	BX
+
+	mov AH,0Fh
+	; Read current video mode
+	; NONE
+	; OUT ----------------------
+	; AL : Current video mode ID
+	; AH : Row length in symbols
+	; BH : Active page number
+	int 10h
+
+	;cmp AL,01h
+	;je vMode01
+	cmp AL,03h
+	je vMode03
+	; Unknown video	mode
+	PRINT unkmode
+	jmp ExitStorePic
+
+;vMode01:; 40x25 @ 16 text mode
+	;mov AX,40*25
+	;jmp vModeEndCase
+
+vMode03:; 80x25	@ 16 text mode
+	mov AX,80*25
+	;jmp vModeEndCase
+
+vModeEndCase:
+	push CX	DI SI DS ES
+
+	mov CX,AX ; CX - frame length
+	mov BL,BH ; BH - active	page number
+	xor BH,BH ; AX - frame offset
+	mul BX
+
+	; lods : AX <= [DS:SI]
+	push 0B800h    ; Video memory segment
+	pop DS
+	mov SI,	AX     ; Page offset
+
+	; stos : AX => [ES:DI]
+	push CODE      ; Buffer	offset
+	pop ES
+	lea DI,	fbuffer
+
+StoreRepeat:
+	lodsw
+	stosb
+	loop StoreRepeat
+StoreBreak:
+	pop ES DS SI DI	CX
+ExitStorePic:
+	pop BX AX
+	ret
+ENDP
 
 PrintOuts PROC
 	; SI - address of ASCII	string
@@ -83,13 +196,6 @@ PrintRepeat:
 	stosw
 	jmp PrintRepeat
 PrintBreak:
-	;xor AX, AX
-	; Wait key - BIOS Int 16h @ 00h
-	; NONE
-	; OUT -------------------------
-	; AL : ASCII keycode
-	; AH : scancode, EASCII	when AL	== 0
-	;int 16h
 	pop DS DI ES AX
 	ret
 ENDP
@@ -108,50 +214,37 @@ START:	mov AX,	CS
 	mov DS,	AX
 
 	cli
-	;mov AH, 35h
-	;mov AL, 09h
-	; Get  IV address - DOS	35h
-	; AL : IV number
-	; OUT ---------------------
-	; ES:BX	: IV address
-	;int 21h
-
 	xor AX,AX
 	mov ES,AX
 	; Direct read IV from table
-	mov BX,ES:[9*2*2]
-	mov ES,ES:[9*2*2+2]
+	mov BX,	word ptr ES:[9*2*2]
+	mov ES,	word ptr ES:[9*2*2+2]
 
 	; Exit when already loaded
 	mov AX,	ES:[BX-2]
 	cmp AX,	CS:[sig]
-
 	jne ContinLoad
+
 	sti
+	DOSPRINT notinst
 	jmp EmergExit
+
+
+	; INDOS	state -	DOS 34h	[UNDOCUMENTED!]
+	; NONE
+	; OUT ---------------------------------
+	; ES:BX	: address of DOS activity flag
+
 
  ContinLoad:
 	mov i9old,   BX
 	mov i9old+2, ES
 
-	;lea DX, KbdHook
-	;mov AH, 25h
-	;mov AL, 09h
-	; Set  IV address - DOS	25h
-	; AL : IV number
-	; DS:DX	: Interrupt handler
-	; OUT ---------------------
-	; NONE
-	;int 21h
-
 	xor AX,	AX
 	mov ES,	AX
 	; Direct write IV to table
-	lea AX,	KbdHook
-	mov ES:[9*2*2],	AX
-	mov AX,	CODE
-	mov ES:[9*2*2+2], AX
-
+	mov word ptr ES:[9*2*2], offset	KbdHook
+	mov word ptr ES:[9*2*2+2], CODE
 	sti
 
 	DOSPRINT wasinst
@@ -164,15 +257,14 @@ START:	mov AX,	CS
 	int 27h
 
 EmergExit:
-	nop
-	nop
-	nop
-	DOSPRINT emex
 	mov AX,	4C01h
 	int 21h
+
 emex	DB 'Fatal error, process terminated. $',0
-wasinst	DB 'Installed in memory. $',0
-notinst	DB 'Error, not installed in memory. $',0
+
+wasinst	DB 'TSR installed in memory. $',0
+notinst	DB 'Error, TSR already loaded! $',0
+
 EndCode:
 CODE ENDS
 END START
