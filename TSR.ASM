@@ -3,17 +3,20 @@
 ; Exit when CTRL/X pressed.
 CODE SEGMENT
 
-ASSUME CS:CODE,	DS:CODE, SS:CODE
+ASSUME CS:CODE,	DS:CODE
+
+firstbyte:
 
 fhdl	DW 0DBDBh ; File handle
 
-fname	DB 'screen.dmp', 00h
+fname	DB 'screen.dmp', 0
 
 asyncst	DB 000h
-fbuffer	DB 80*25 dup (0DBh)
+;fbuffer DB 80*25 dup (0DBh)
+fbuffer	DB 000h
 
-msg 	DB 'Message!                                    ',0
-generr	DB 'G  ',0,'eneric Error!                       ',0
+msg	DB 'Message!                                    ',0
+generr	DB 'Generic Error!                              ',0
 
 unkmode	DB 'Unknown video mode, cannot take screenshot! ',0
 imgsved	DB 'Screenshot succesfully taken.               ',0
@@ -33,6 +36,7 @@ ENDM
 
 sig	DW 0F3F2h ; Signature
 KbdHook:;Int 9h	- key press
+	pushf
 	push AX	DS
 
 	xor AX,	AX
@@ -53,12 +57,13 @@ KbdHook:;Int 9h	- key press
 
 PipelineToOldHandle:
 	pop DS AX
+	popf
 int9h:	DB 0EAh	  ; Jmp	far opcode
 i9old	DW 0DBDBh ; BX
 	DW 0DBDBh ; ES
 
 SavePicHook:
-	print MSG
+	;call StoreScreenToMem
 	jmp PipelineToOldHandle
 
 
@@ -86,31 +91,50 @@ CanUnassignIV:
 	mov word ptr ES:[9*2*2], AX
 	mov AX,	i9old+2
 	mov word ptr ES:[9*2*2+2], AX
+	sti
 
+	;cli
+	;clc
 	;RemoveEnvSeg
-	;mov ES, CS:[2Ch] ; environment	seg
-	;mov AH,49h
+	;mov ES, CS:2Ch	; environment seg
+	;mov AH, 49h
 	; [RE-ENTERABLE]
 	; Release memory block - DOS 49h
 	; ES : segment of releasing block
 	; OUT ---------------------------
 	; AX : Error code when CF == 1
 	;int 21h
-	clc
-	pushf
+	;pushf
 
+	;cli
 	; RemoveCodeSeg:
+
 	push CS
 	pop ES
-	mov AH,49h
+
+	mov AH,	49h
 	; Release memory block - DOS 49h
 	int 21h
-	sti
-	pop ES
-	jc RemoveFails
-	popf
-	jc RemoveFails
 
+	;sti
+	;cli
+	;mov ax,cs:[2ch]
+	;dec ax
+	;mov ES,AX
+	;mov ES:1, word	ptr 0
+
+	;mov AX,CS
+	;dec AX
+	;mov ES,AX
+	;mov ES:1, word	ptr 0
+
+	;sti
+
+	pop ES
+	;popf
+	jc RemoveFails
+	;popf
+	;jc RemoveFails
 	PRINT removed
 	jmp PipelineToOldHandle
 
@@ -132,17 +156,11 @@ StoreScreenToMem PROC
 	; BH : Active page number
 	int 10h
 
-	;cmp AL,01h
-	;je vMode01
 	cmp AL,03h
 	je vMode03
 	; Unknown video	mode
 	PRINT unkmode
 	jmp ExitStorePic
-
-;vMode01:; 40x25 @ 16 text mode
-	;mov AX,40*25
-	;jmp vModeEndCase
 
 vMode03:; 80x25	@ 16 text mode
 	mov AX,80*25
@@ -166,12 +184,14 @@ vModeEndCase:
 	pop ES
 	lea DI,	fbuffer
 
+	; add saving picture size
 StoreRepeat:
 	lodsw
 	stosb
 	loop StoreRepeat
 StoreBreak:
 	pop ES DS SI DI	CX
+	PRINT imgsved
 ExitStorePic:
 	pop BX AX
 	ret
@@ -249,12 +269,16 @@ START:	mov AX,	CS
 
 	DOSPRINT wasinst
 
-	lea BX,	START
+	;lea BX, START
 	; Terminate and	stay resident -	DOS int	27h
 	; DX : 1 + offset of last TSR byte
 	; OUT ----------------------------
 	; NONE
-	int 27h
+	;int 27h
+
+	mov AX,	3100h
+	mov DX,	(START - firstbyte + 10Fh)/16
+	int 21h
 
 EmergExit:
 	mov AX,	4C01h
