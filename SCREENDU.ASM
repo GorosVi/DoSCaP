@@ -3,52 +3,186 @@
 ; Exit when CTRL/X pressed.
 CODE SEGMENT
 
-ASSUME CS:CODE,	DS:CODE, SS:CODE
-;org 100h
+ASSUME CS:CODE,	DS:CODE
 
-sig	DQ 0F30F88AC7D4842F2h ;Signature
+FIRST:
 
-fhdl	DW 0DBDBh
+fhdl	DW 0DBDBh ; File handle
 
-fname	DB 'screen.dmp', 00h
+fname	DB 'screen.dmp', 0
+
+asyncst	DB 000h
+flength	DW 000h
+fbuffer	DB 80*25 dup (0DBh)
+
+msg	DB 'Message!                                    ',0
+generr	DB 'Generic Error!                              ',0
+
+unkmode	DB 'Unknown video mode, cannot take screenshot! ',0
+imgsved	DB 'Screenshot succesfully taken.               ',0
+bufbusy	DB 'Cannot take screenshot, buffer not empty!   ',0
+removed	DB 'TSR succefully unloaded from memory.        ',0
+blremov	DB 'Attempt to unload TSR failed!               ',0
+unremov	DB 'Error in memory unallocation!               ',0
 
 PRINT MACRO adr
-	push AX
-	push DX
-	lea DX,	adr
-	mov AH,	09h
-	; Print	string - DOS 09h
-	; DS:DX	- ASCII	input string
-	; OUT ----------------------
-	; NONE
-	int 21h
-	pop DX
-	pop AX
+	pushf
+	push SI
+	lea SI,	adr
+	call PrintOuts
+	pop SI
+	popf
 ENDM
 
-START:	mov AX,	CS
+sig	DW 0F3F2h ; Signature
+KbdHook:;Int 9h	- key press
+	pushf
+	push AX	DS
+
+	xor AX,	AX
 	mov DS,	AX
-	mov ES,	AX
+	; Read keyboard	status byte from memory
+	test byte ptr DS:[0417h], 04h ;	1 when CTRL was	held
+	jz  PipelineToOldHandle
+	test byte ptr DS:[0417h], 0Bh ;	0 when ALT & Shift's was released
+	jnz PipelineToOldHandle
+	; Continue when	only CTRL is pressed
 
-FileCreate:
-	mov AH,	3Ch
-	lea DX,	fname
-	xor CX,	CX
-	; Create file -	DOS 3Ch
-	; DS:DX	: filename - ASCII string
-	; CX : file attributes
-	; OUT ----------------------
-	; AX : error code if CF	== 1
+	in  AL,	60h
+	cmp AL,	1Fh ; 'S'
+	je  SavePicHook
+	cmp AL,	2Dh ; 'X'
+	je  ExitResidentHook
+	jmp PipelineToOldHandle
+
+PipelineToOldHandle:
+	pop DS AX
+	popf
+int9h:	DB 0EAh	  ; Jmp	far opcode
+i9old	DW 0DBDBh ; BX
+	DW 0DBDBh ; ES
+
+SavePicHook:
+	push CS
+	pop DS
+	test asyncst,0FFh
+	jnz PrevImageNotSaved
+	mov asyncst, 001h
+	call StoreScreenToMem
+	jmp PipelineToOldHandle
+
+PrevImageNotSaved:
+	PRINT bufbusy
+	jmp PipelineToOldHandle
+
+ExitResidentHook:
+	push ES
+
+	push CODE
+	pop DS
+	xor AX,AX
+	mov ES,AX
+
+	; Check	IV's state
+	cmp word ptr ES:[09h*2*2], offset KbdHook
+	jne IVBlocked
+	cmp word ptr ES:[09h*2*2+2], CODE
+	jne IVBlocked
+
+	cmp word ptr ES:[28h*2*2], offset QuantumHook
+	jne IVBlocked
+	cmp word ptr ES:[28h*2*2+2], CODE
+	je  CanUnassignIV
+IVBlocked:
+	pop ES
+	PRINT blremov
+	jmp PipelineToOldHandle
+
+CanUnassignIV:
+	cli
+	;RestoreIVs
+	mov AX,	i9old
+	mov word ptr ES:[09h*2*2], AX
+	mov AX,	i9old+2
+	mov word ptr ES:[09h*2*2+2], AX
+
+	mov AX,	i28old
+	mov word ptr ES:[28h*2*2], AX
+	mov AX,	i28old+2
+	mov word ptr ES:[28h*2*2+2], AX
+	sti
+
+	;cli
+	;clc
+	;RemoveEnvSeg
+	;mov ES, CS:2Ch	; environment seg
+	;mov AH, 49h
+	; [RE-ENTERABLE]
+	; Release memory block - DOS 49h
+	; ES : segment of releasing block
+	; OUT ---------------------------
+	; AX : Error code when CF == 1
+	;int 21h
+	;pushf
+
+	;cli
+	; RemoveCodeSeg:
+
+	push CS
+	pop ES
+
+	mov AH,	49h
+	; Release memory block - DOS 49h
 	int 21h
-	mov fhdl, AX
-	; Error	when CF	== 1
-	jnc FileCreated
-	PRINT generr
-	jmp EmergExit
-FileCreated:
 
-WriteScreenToFile:
-	; At this time only first 4 video modes	are used
+	;sti
+	;cli
+	;mov ax,cs:[2ch]
+	;dec ax
+	;mov ES,AX
+	;mov ES:1, word	ptr 0
+
+	;mov AX,CS
+	;dec AX
+	;mov ES,AX
+	;mov ES:1, word	ptr 0
+
+	;sti
+
+	pop ES
+	;popf
+	jc RemoveFails
+	;popf
+	;jc RemoveFails
+	PRINT removed
+	jmp PipelineToOldHandle
+
+RemoveFails:
+	PRINT unremov
+	jmp PipelineToOldHandle
+
+QuantumHook: ;Int 28h -	DOS Time quantum [UNDOCUMENTED!]
+	pushf
+	push AX	DS
+	push CS
+	pop DS
+	test asyncst, 01h
+	jz PipelineProcessing
+
+	PRINT msg
+
+PipelineProcessing:
+	pop DS AX
+	popf
+int28h:	DB 0EAh	  ; Jmp	far opcode
+i28old	DW 0DBDBh ; BX
+	DW 0DBDBh ; ES
+
+
+
+StoreScreenToMem PROC
+	; At this time only 03h	video mode allowed
+	push AX	BX
 
 	mov AH,0Fh
 	; Read current video mode
@@ -59,77 +193,153 @@ WriteScreenToFile:
 	; BH : Active page number
 	int 10h
 
-	cmp AL,01h
-	jbe vMode01
 	cmp AL,03h
-	jbe vMode23
+	je vMode03
 	; Unknown video	mode
-	PRINT generr
-	jmp vMode23
+	PRINT unkmode
+	jmp ExitStorePic
 
-vMode01:; 40x25	@ 16 text mode
-	mov AX,40*25*2
-	jmp vModeEndCase
-
-vMode23:; 80x25	@ 16 text mode
-	mov AX,80*25*2
+vMode03:; 80x25	@ 16 text mode
+	mov AX,80*25
 	;jmp vModeEndCase
 
 vModeEndCase:
+	mov flength, AX
+	push CX	DI SI DS ES
+
 	mov CX,AX ; CX - frame length
-	mov BL,BH ; AX - frame offset
-	xor BH,BH
+	mov BL,BH ; BH - active	page number
+	xor BH,BH ; AX - frame offset
 	mul BX
 
-WriteToFile:
-	mov BX,	fhdl
-
-	mov DX,	AX     ; Video page offset
-	push DS
+	; lods : AX <= [DS:SI]
 	push 0B800h    ; Video memory segment
 	pop DS
-		       ; Page size contains in CX
-	mov AH,	40h
-	; Write	to file	- DOS 40h
-	; BX : file handle
-	; CX : bytes to	write
-	; DS:DX	: read buffer
-	; OUT ----------------------
-	; AL : writed bytes count
-	; AX : error code if CF	== 1
-	int 21h
+	mov SI,	AX     ; Page offset
+
+	; stos : AX => [ES:DI]
+	push CODE      ; Buffer	offset
+	pop ES
+	lea DI,	fbuffer
+
+	; add saving picture size
+StoreRepeat:
+	lodsw
+	stosb
+	loop StoreRepeat
+StoreBreak:
+	pop ES DS SI DI	CX
+	PRINT imgsved
+ExitStorePic:
+	pop BX AX
+	ret
+ENDP
+
+PrintOuts PROC
+	; SI - address of ASCII	string
+	push AX	ES DI DS
+	; lods : AX <= [DS:SI]
+	push CODE
 	pop DS
-	; Error	when CF	== 1 or	CX != AX - written symbols count
-	jc  EmergExit
-	cmp AX,CX
-	jne EmergExit
+	; stos : AX => [ES:DI]
+	push 0B800h
+	xor DI,	DI
+	pop ES
+	mov AH,	0Ch
+	; Write	to 0 page of video memory
+PrintRepeat:
+	lodsb
+	cmp AL,	00h
+	je  PrintBreak
+	stosw
+	jmp PrintRepeat
+PrintBreak:
+	pop DS DI ES AX
+	ret
+ENDP
 
-FileClose:
-	mov AH,	3Eh
-	mov BX,	fhdl
-	; Close	file - DOS 3Eh
-	; BX : file handle
-	; OUT ----------------------
-	; AX : error code if CF	== 1
+DOSPRINT MACRO adr
+	push DX	DS
+	push CODE
+	pop DS
+	lea DX,	adr
+	mov AH,	09h
 	int 21h
-	; Error	when CF	== 1
-	jnc FileClosed
-	PRINT generr
+	pop DS DX
+ENDM
+
+START:	mov AX,	CS
+	mov DS,	AX
+
+	cli
+	xor AX,AX
+	mov ES,AX
+	; Direct read IV from table
+	mov BX,	word ptr ES:[09h*2*2]
+	mov ES,	word ptr ES:[09h*2*2+2]
+
+	; Exit when already loaded
+	mov AX,	ES:[BX-2]
+	cmp AX,	CS:[sig]
+	jne ContinLoad
+
+	sti
+	DOSPRINT notinst
 	jmp EmergExit
-FileClosed:
 
-	; Return to DOS
-	mov AX,	4C00h
+	; INDOS	state -	DOS 34h	[UNDOCUMENTED!]
+	; NONE
+	; OUT ---------------------------------
+	; ES:BX	: address of DOS activity flag
+
+
+ContinLoad:
+	mov i9old,   BX
+	mov i9old+2, ES
+
+	xor AX,	AX
+	mov ES,	AX
+	; Direct write IV to table
+	mov word ptr ES:[09h*2*2], offset KbdHook
+	mov word ptr ES:[09h*2*2+2], CODE
+
+	mov BX,	word ptr ES:[28h*2*2]
+	mov ES,	word ptr ES:[28h*2*2+2]
+	mov i28old,   BX
+	mov i28old+2, ES
+	xor AX,	AX
+	mov ES,	AX
+	mov word ptr ES:[28h*2*2], offset QuantumHook
+	mov word ptr ES:[28h*2*2+2], CODE
+	sti
+
+	DOSPRINT wasinst
+
+	;lea BX, START
+	; Terminate and	stay resident -	DOS int	27h
+	; DX : 1 + offset of last TSR byte
+	; OUT ----------------------------
+	; NONE
+	;int 27h
+
+	mov AX,	3100h
+	mov DX,	(START - FIRST + 10Fh)/16
+	; Terminate and	stay tesident -	DOS 31h
+	; DX - resident	size in	paragraphs
+	; OUT ---------------------------------
+	; NONE
+
 	int 21h
-	
+
 EmergExit:
-	PRINT emex
 	mov AX,	4C01h
 	int 21h
 
-msg	DB 'Message! $'
-emex	DB 'Process terminated. $'
-generr	DB 'Generic Error! $'
+emex	DB 'Fatal error, process terminated. $',0
 
+wasinst	DB 'TSR installed in memory. $',0
+notinst	DB 'Error, TSR already loaded! $',0
+
+EndCode:
 CODE ENDS
 END START
