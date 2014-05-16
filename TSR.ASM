@@ -3,10 +3,13 @@
 ; Exit when CTRL/X pressed.
 
 CODE SEGMENT
-
 ASSUME CS:CODE,	DS:CODE
 
-STARTPOINT:
+org 100h
+
+
+START:	jmp ENTRYPOINT
+
 
 unkmode	DB 'Unknown video mode, cannot take screenshot! ',0
 imgstrd	DB 'Screenshot stored in memory.                ',0
@@ -27,7 +30,6 @@ flength	DW 000h	; Actual framebuffer size
 fbuffer	DB 80*25 dup (0DBh)
 
 
-
 PRINT MACRO adr
 	pushf
 	push SI
@@ -36,7 +38,6 @@ PRINT MACRO adr
 	pop SI
 	popf
 ENDM
-
 
 
 sig	DW 0F3F2h ; Signature
@@ -61,13 +62,13 @@ KbdHook:;Int 9h	- key press
 	je  ExitResidentHook
 	;jmp PipelineToOldHandle
 
+
 PipelineToOldHandle:
 	pop DS AX
 	popf
 int9h:	DB 0EAh	  ; Jmp	far opcode
 i9old	DW 0DBDBh ; BX
 	DW 0DBDBh ; ES
-
 
 
 SavePicHook:
@@ -85,20 +86,20 @@ PrevImageNotSaved:
 	jmp PipelineToOldHandle
 
 
-
 ExitResidentHook:
 	; DS value is 0000h
 
+	mov AX,	CS
 	; Check	IV's state - Keyboard Int 9h
 	cmp word ptr DS:[09h*2*2], offset KbdHook
 	jne IVBlocked
-	cmp word ptr DS:[09h*2*2+2], CODE
+	cmp word ptr DS:[09h*2*2+2], AX
 	jne IVBlocked
 
 	; DOS time quantum Int 28h
 	cmp word ptr DS:[28h*2*2], offset QuantumHook
 	jne IVBlocked
-	cmp word ptr DS:[28h*2*2+2], CODE
+	cmp word ptr DS:[28h*2*2+2], AX
 	je  CanUnassignIV
 
 IVBlocked:
@@ -121,61 +122,40 @@ CanUnassignIV:
 	mov AX,	CS:i28old+2
 	mov word ptr DS:[28h*2*2+2], AX
 
-	sti
-
-;------------ Not working ------------------
-	;push ES
-	;cli
-	;clc
-	;RemoveEnvSeg
-	;mov ES, CS:2Ch	; environment seg
-	;mov AH, 49h
+	push ES
+	; Remove Environnement Section
+	mov ES,	CS:2Ch ; Pointer in PSP
+	mov AH,	49h
 	; [RE-ENTERABLE]
 	; Release memory block - DOS 49h
 	; ES : segment of releasing block
 	; OUT ---------------------------
 	; AX : Error code when CF == 1
-	;int 21h
-	;pushf
+	int 21h
+	pushf
 
-	;cli
 	; RemoveCodeSeg:
-
-	;push CS
-	;pop ES
-
-	;mov AH,	49h
+	push CS
+	pop ES
+	mov AH,	49h
 	; Release memory block - DOS 49h
-	;int 21h
+	int 21h
 
-	;sti
-	;cli
-	;mov ax,cs:[2ch]
-	;dec ax
-	;mov ES,AX
-	;mov ES:1, word	ptr 0
-
-	;mov AX,CS
-	;dec AX
-	;mov ES,AX
-	;mov ES:1, word	ptr 0
-
-	;sti
-
-	;pop ES
-	;popf
-	;jc RemoveFails
-	;popf
-	;jc RemoveFails
-;------------ Not working ------------------
-
+	sti
+	jc RemoveFails
+	popf
+	pop ES
+	sti
+	jc RemoveFailsNoFlags
 	PRINT removed
 	jmp PipelineToOldHandle
 
 RemoveFails:
+	popf
+	pop ES
+RemoveFailsNoFlags:
 	PRINT unremov
 	jmp PipelineToOldHandle
-
 
 
 QuantumHook: ;Int 28h -	DOS Time quantum [UNDOCUMENTED]
@@ -248,7 +228,7 @@ FileClosed:
 	and asyncst, 0FEh ; Clear busy flag
 	PRINT imgsved
 
-	; Filename changing
+	; Filename scalng
 	inc fname[7]
 	cmp fname[7], '9'
 	jng SaveExit
@@ -257,12 +237,12 @@ FileClosed:
 SaveExit:
 	pop DS CX BX AX
 
+
 PipelineProcessing:
 	popf
 int28h:	DB 0EAh	  ; Jmp	far opcode
 i28old	DW 0DBDBh ; BX
 	DW 0DBDBh ; ES
-
 
 
 StoreScreenToMem PROC
@@ -304,7 +284,7 @@ vModeEndCase:
 	mov SI,	AX	; Page offset
 
 	; Stos : AX => [ES:DI]
-	push CODE
+	push CS
 	pop ES
 	lea DI,	fbuffer	; Buffer offset
 
@@ -324,13 +304,12 @@ ExitStorePic:
 ENDP
 
 
-
 PrintOuts PROC
 	; INPUT: SI - address of ASCII string
 	push AX	ES DI DS
 
 	; Lods : AX <= [DS:SI]
-	push CODE
+	push CS
 	pop DS
 
 	; Stos : AX => [ES:DI]
@@ -353,10 +332,9 @@ PrintBreak:
 ENDP
 
 
-
 DOSPRINT MACRO adr
 	push AX	DX DS
-	push CODE
+	push CS
 	pop DS
 	lea DX,	adr
 	mov AH,	09h
@@ -364,7 +342,8 @@ DOSPRINT MACRO adr
 	pop DS DX AX
 ENDM
 
-START:	; Installing IV	callbacks
+
+ENTRYPOINT: ; Installing IV callbacks
 	cli
 	xor AX,	AX
 	mov ES,	AX
@@ -387,7 +366,7 @@ ContinLoad:
 	mov CS:i9old+2,	DS
 	; Direct write IV to table
 	mov word ptr ES:[09h*2*2], offset KbdHook
-	mov word ptr ES:[09h*2*2+2], CODE
+	mov word ptr ES:[09h*2*2+2], CS
 
 	mov AX,	word ptr ES:[28h*2*2]
 	mov BX,	word ptr ES:[28h*2*2+2]
@@ -395,14 +374,14 @@ ContinLoad:
 	mov CS:i28old+2, BX
 	; Direct write IV to table
 	mov word ptr ES:[28h*2*2], offset QuantumHook
-	mov word ptr ES:[28h*2*2+2], CODE
+	mov word ptr ES:[28h*2*2+2], CS
 	sti
 
 	DOSPRINT wasinst
 
 	mov AX,	3100h
-	mov DX,	(START - STARTPOINT + 10Fh)/16
-	; Terminate and	stay tesident -	DOS 31h
+	mov DX,	(ENTRYPOINT - START + 10Fh)/16
+	; Terminate and	stay resident -	DOS 31h
 	; DX - resident	size in	paragraphs
 	; OUT ---------------------------------
 	; NONE
@@ -412,9 +391,10 @@ EmergExit:
 	mov AX,	4C01h
 	int 21h
 
+
 wasinst	DB 'TSR installed in memory. $',0
 notinst	DB 'Error, TSR already loaded! $',0
 
-EndCode:
+
 CODE ENDS
 END START
