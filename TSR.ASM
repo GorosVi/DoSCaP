@@ -22,12 +22,12 @@ fcrerr	DB 'Error when creating output file!            ',0
 fwrerr	DB 'Error when writing to output file!          ',0
 fclerr	DB 'Error when closing output file!             ',0
 
-fhdl	DW 0DBDBh ; File handle
-fname	DB 'screen_0.dmp', 0
-
+fhdl	DW ? ; File handle
+fname	DB 'C:\GWORK\screen_0.dmp'
+fnend	DB 0
 asyncst	DB 000h	; Status flags
 flength	DW 000h	; Actual framebuffer size
-fbuffer	DB 80*25 dup (0DBh)
+fbuffer	DB 80*25 dup (?)
 
 
 PRINT MACRO adr
@@ -229,10 +229,10 @@ FileClosed:
 	PRINT imgsved
 
 	; Filename scalng
-	inc fname[7]
-	cmp fname[7], '9'
+	inc fname[fnend-fname-5]
+	cmp fname[fnend-fname-5], '9'
 	jng SaveExit
-	mov fname[7], '0'
+	mov fname[fnend-fname-5], '0'
 
 SaveExit:
 	pop DS CX BX AX
@@ -392,8 +392,8 @@ EmergExit:
 	int 21h
 
 
-wasinst	DB 'TSR installed in memory. $',0
-notinst	DB 'Error, TSR already loaded! $',0
+wasinst	DB 'TSR installed in memory. $'
+notinst	DB 'Error, TSR already loaded! $'
 
 
 CODE ENDS
